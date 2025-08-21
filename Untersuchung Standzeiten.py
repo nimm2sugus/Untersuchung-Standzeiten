@@ -82,27 +82,22 @@ df.dropna(subset=['Gestartet', 'Beendet'], inplace=True)
 # Berechnung der Standzeit (in Stunden)
 df['Standzeit_h'] = (df['Beendet'] - df['Gestartet']).dt.total_seconds() / 3600
 
-# --- PRÄZISIERTE BERECHNUNG für 'Min_Stand' ---
+# --- ERWEITERTE BERECHNUNG für Minuten und Stunden über 30 Min ---
 
-# 1. Zuerst die gesamte Standzeit jedes Vorgangs in Minuten berechnen.
+# 1. Gesamte Standzeit jedes Vorgangs in Minuten berechnen.
 df['Standzeit_min_gesamt'] = df['Standzeit_h'] * 60
 
-# 2. Eine neue Spalte 'Min_Stand' erstellen.
-#    Hier wird von der gesamten Standzeit in Minuten die ersten 30 Minuten subtrahiert.
-#    Beispiel:
-#    - Ein Ladevorgang von 50 Minuten Dauer ergibt: 50 - 30 = 20 Minuten.
-#    - Ein Ladevorgang von 25 Minuten Dauer ergibt: 25 - 30 = -5 Minuten.
-minuten_ueber_30 = df['Standzeit_min_gesamt'] - 30
+# 2. Minuten über 30 berechnen. Negative Werte (für Ladevorgänge <= 30 Min) werden auf 0 gesetzt.
+df['Min_Stand'] = (df['Standzeit_min_gesamt'] - 30).clip(lower=0)
 
-# 3. Alle Ergebnisse, die negativ sind (also Ladevorgänge <= 30 Min.), werden auf 0 gesetzt.
-#    Dies stellt sicher, dass nur die Zeit *über* 30 Minuten erfasst wird.
-df['Min_Stand'] = minuten_ueber_30.clip(lower=0)
+# 3. NEU: Die Minuten über 30 in Stunden umrechnen für eine zusätzliche Kennzahl.
+df['Std_Stand'] = df['Min_Stand'] / 60
 
-# --- Ende der präzisierten Berechnung ---
+# --- Ende der erweiterten Berechnung ---
 
 
-# Negative oder Null-Standzeiten herausfiltern, da sie nicht plausibel sind
-df = df[df['Standzeit_h'] > 0.01] # Ein kleiner Schwellenwert, um sehr kurze, irrelevante Sessions zu ignorieren
+# Negative oder Null-Standzeiten herausfiltern
+df = df[df['Standzeit_h'] > 0.01]
 
 # Erstellung der Monatsspalte für die spätere Gruppierung
 df['Monat'] = df['Beendet'].dt.to_period('M').dt.to_timestamp()
@@ -149,16 +144,21 @@ if df_filtered.empty:
 # Schritt 4: Aggregation und Visualisierung der Standzeiten
 st.header("Monatliche Auswertung der Standzeiten")
 
+# ERWEITERTE Aggregation: Nun auch mit 'Std_Stand'
 standzeiten_pro_monat = df_filtered.groupby('Monat').agg(
     Gesamt_Standzeit_h=('Standzeit_h', 'sum'),
     Durchschnittl_Standzeit_h=('Standzeit_h', 'mean'),
     Anzahl_Vorgange=('Standzeit_h', 'count'),
-    Gesamt_Min_Stand=('Min_Stand', 'sum')
+    Gesamt_Min_Stand=('Min_Stand', 'sum'),
+    Gesamt_Std_Stand=('Std_Stand', 'sum') # NEU
 ).reset_index()
 
+# Runden der Ergebnisse
 standzeiten_pro_monat['Gesamt_Standzeit_h'] = standzeiten_pro_monat['Gesamt_Standzeit_h'].round(2)
 standzeiten_pro_monat['Durchschnittl_Standzeit_h'] = standzeiten_pro_monat['Durchschnittl_Standzeit_h'].round(2)
 standzeiten_pro_monat['Gesamt_Min_Stand'] = standzeiten_pro_monat['Gesamt_Min_Stand'].round(2)
+standzeiten_pro_monat['Gesamt_Std_Stand'] = standzeiten_pro_monat['Gesamt_Std_Stand'].round(2) # NEU
+
 
 # Visualisierung 1: Gesamte Standzeit pro Monat (Balkendiagramm)
 st.subheader("Gesamte monatliche Standzeit (in Stunden)")
@@ -175,14 +175,30 @@ fig_standzeit_sum.update_layout(xaxis_tickformat="%b %Y")
 st.plotly_chart(fig_standzeit_sum, use_container_width=True)
 
 
-# Visualisierung 2 für 'Min_Stand'
+# --- NEU: Visualisierung 2 für 'Std_Stand' in Stunden ---
+st.subheader("Gesamte Standzeit über 30 Minuten (in Stunden)")
+fig_std_stand_sum = px.bar(
+    standzeiten_pro_monat,
+    x='Monat',
+    y='Gesamt_Std_Stand',
+    title='Summe der Standzeit-Stunden nach Abzug der ersten 30 Minuten pro Vorgang',
+    labels={'Gesamt_Std_Stand': 'Gesamte "Überliegezeit" [Stunden]', 'Monat': 'Monat'},
+    text='Gesamt_Std_Stand'
+)
+fig_std_stand_sum.update_traces(textposition='outside', marker_color='#d62728') # Neue Farbe zur Unterscheidung
+fig_std_stand_sum.update_layout(xaxis_tickformat="%b %Y")
+st.plotly_chart(fig_std_stand_sum, use_container_width=True)
+# --- Ende des neuen Blocks ---
+
+
+# Visualisierung 3: für 'Min_Stand' in Minuten
 st.subheader("Gesamte Standzeit über 30 Minuten (in Minuten)")
 fig_min_stand_sum = px.bar(
     standzeiten_pro_monat,
     x='Monat',
     y='Gesamt_Min_Stand',
     title='Summe der Standzeit-Minuten nach Abzug der ersten 30 Minuten pro Vorgang',
-    labels={'Gesamt_Min_Stand': 'Gesamte "Min_Stand" [Minuten]', 'Monat': 'Monat'},
+    labels={'Gesamt_Min_Stand': 'Gesamte "Überliegezeit" [Minuten]', 'Monat': 'Monat'},
     text='Gesamt_Min_Stand'
 )
 fig_min_stand_sum.update_traces(textposition='outside', marker_color='#2ca02c')
@@ -190,7 +206,7 @@ fig_min_stand_sum.update_layout(xaxis_tickformat="%b %Y")
 st.plotly_chart(fig_min_stand_sum, use_container_width=True)
 
 
-# Visualisierung 3: Durchschnittliche Standzeit pro Monat (Liniendiagramm)
+# Visualisierung 4: Durchschnittliche Standzeit pro Monat (Liniendiagramm)
 st.subheader("Durchschnittliche Standzeit pro Ladevorgang (in Stunden)")
 fig_standzeit_avg = px.line(
     standzeiten_pro_monat,
@@ -205,7 +221,7 @@ fig_standzeit_avg.update_layout(xaxis_tickformat="%b %Y")
 st.plotly_chart(fig_standzeit_avg, use_container_width=True)
 
 
-# Visualisierung 4: Detaillierte Datentabelle
+# Visualisierung 5: Detaillierte Datentabelle (ERWEITERT)
 st.subheader("Datentabelle der monatlichen Standzeit-KPIs")
 st.dataframe(
     standzeiten_pro_monat.rename(columns={
@@ -213,12 +229,14 @@ st.dataframe(
         'Gesamt_Standzeit_h': 'Gesamte Standzeit (Stunden)',
         'Durchschnittl_Standzeit_h': 'Ø Standzeit pro Vorgang (Stunden)',
         'Anzahl_Vorgange': 'Anzahl Ladevorgänge',
-        'Gesamt_Min_Stand': 'Gesamte Standzeit > 30 Min (Minuten)'
+        'Gesamt_Min_Stand': 'Gesamte Zeit > 30 Min (Minuten)',
+        'Gesamt_Std_Stand': 'Gesamte Zeit > 30 Min (Stunden)' # NEU
     }).style.format({
         'Monat': lambda t: t.strftime('%Y-%m'),
         'Gesamte Standzeit (Stunden)': '{:.2f}',
         'Ø Standzeit pro Vorgang (Stunden)': '{:.2f}',
-        'Gesamte Standzeit > 30 Min (Minuten)': '{:.2f}'
+        'Gesamte Zeit > 30 Min (Minuten)': '{:.2f}',
+        'Gesamte Zeit > 30 Min (Stunden)': '{:.2f}' # NEU
     }),
     use_container_width=True
 )
