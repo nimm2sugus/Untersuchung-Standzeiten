@@ -88,6 +88,14 @@ df.dropna(subset=['Gestartet', 'Beendet'], inplace=True)
 # Die Standzeit ist hier als die gesamte Dauer von 'Gestartet' bis 'Beendet' definiert.
 df['Standzeit_h'] = (df['Beendet'] - df['Gestartet']).dt.total_seconds() / 3600
 
+# --- NEU: Berechnung der Spalte 'Min_Stand' ---
+# Zuerst wird die Standzeit in Minuten berechnet.
+df['Standzeit_min'] = df['Standzeit_h'] * 60
+# 'Min_Stand' erfasst die Minuten, die über die ersten 30 Minuten hinausgehen.
+# Wenn die Dauer <= 30 Min ist, ist das Ergebnis 0.
+df['Min_Stand'] = (df['Standzeit_min'] - 30).clip(lower=0)
+# --- Ende des neuen Blocks ---
+
 # Negative oder Null-Standzeiten herausfiltern, da sie nicht plausibel sind
 df = df[df['Standzeit_h'] > 0.01] # Ein kleiner Schwellenwert, um sehr kurze, irrelevante Sessions zu ignorieren
 
@@ -143,15 +151,19 @@ if df_filtered.empty:
 st.header("Monatliche Auswertung der Standzeiten")
 
 # Datenaggregation: Gruppierung nach Monat und Berechnung der relevanten Kennzahlen
+# --- ERWEITERT: 'Min_Stand' wird nun ebenfalls aggregiert ---
 standzeiten_pro_monat = df_filtered.groupby('Monat').agg(
     Gesamt_Standzeit_h=('Standzeit_h', 'sum'),
     Durchschnittl_Standzeit_h=('Standzeit_h', 'mean'),
-    Anzahl_Vorgange=('Standzeit_h', 'count')
+    Anzahl_Vorgange=('Standzeit_h', 'count'),
+    Gesamt_Min_Stand=('Min_Stand', 'sum')  # Neue Aggregation
 ).reset_index()
 
 # Runden der Ergebnisse für eine saubere Darstellung
 standzeiten_pro_monat['Gesamt_Standzeit_h'] = standzeiten_pro_monat['Gesamt_Standzeit_h'].round(2)
 standzeiten_pro_monat['Durchschnittl_Standzeit_h'] = standzeiten_pro_monat['Durchschnittl_Standzeit_h'].round(2)
+standzeiten_pro_monat['Gesamt_Min_Stand'] = standzeiten_pro_monat['Gesamt_Min_Stand'].round(2) # Runden für neue Spalte
+
 
 # Visualisierung 1: Gesamte Standzeit pro Monat (Balkendiagramm)
 st.subheader("Gesamte monatliche Standzeit (in Stunden)")
@@ -168,7 +180,23 @@ fig_standzeit_sum.update_layout(xaxis_tickformat="%b %Y") # Format z.B. "Aug 202
 st.plotly_chart(fig_standzeit_sum, use_container_width=True)
 
 
-# Visualisierung 2: Durchschnittliche Standzeit pro Monat (Liniendiagramm)
+# --- NEU: Visualisierung 2 für 'Min_Stand' ---
+st.subheader("Gesamte Standzeit über 30 Minuten (in Minuten)")
+fig_min_stand_sum = px.bar(
+    standzeiten_pro_monat,
+    x='Monat',
+    y='Gesamt_Min_Stand',
+    title='Summe der Standzeit-Minuten nach Abzug der ersten 30 Minuten pro Vorgang',
+    labels={'Gesamt_Min_Stand': 'Gesamte "Min_Stand" [Minuten]', 'Monat': 'Monat'},
+    text='Gesamt_Min_Stand'
+)
+fig_min_stand_sum.update_traces(textposition='outside', marker_color='#2ca02c') # Andere Farbe zur Unterscheidung
+fig_min_stand_sum.update_layout(xaxis_tickformat="%b %Y")
+st.plotly_chart(fig_min_stand_sum, use_container_width=True)
+# --- Ende des neuen Blocks ---
+
+
+# Visualisierung 3: Durchschnittliche Standzeit pro Monat (Liniendiagramm)
 st.subheader("Durchschnittliche Standzeit pro Ladevorgang (in Stunden)")
 fig_standzeit_avg = px.line(
     standzeiten_pro_monat,
@@ -183,18 +211,21 @@ fig_standzeit_avg.update_layout(xaxis_tickformat="%b %Y")
 st.plotly_chart(fig_standzeit_avg, use_container_width=True)
 
 
-# Visualisierung 3: Detaillierte Datentabelle
+# Visualisierung 4: Detaillierte Datentabelle
+# --- ERWEITERT: Tabelle um 'Min_Stand' ergänzt ---
 st.subheader("Datentabelle der monatlichen Standzeit-KPIs")
 st.dataframe(
     standzeiten_pro_monat.rename(columns={
         'Monat': 'Monat',
         'Gesamt_Standzeit_h': 'Gesamte Standzeit (Stunden)',
         'Durchschnittl_Standzeit_h': 'Ø Standzeit pro Vorgang (Stunden)',
-        'Anzahl_Vorgange': 'Anzahl Ladevorgänge'
+        'Anzahl_Vorgange': 'Anzahl Ladevorgänge',
+        'Gesamt_Min_Stand': 'Gesamte Standzeit > 30 Min (Minuten)' # Neue Spalte für Tabelle
     }).style.format({
         'Monat': lambda t: t.strftime('%Y-%m'), # Formatierung für die Tabellenansicht
         'Gesamte Standzeit (Stunden)': '{:.2f}',
-        'Ø Standzeit pro Vorgang (Stunden)': '{:.2f}'
+        'Ø Standzeit pro Vorgang (Stunden)': '{:.2f}',
+        'Gesamte Standzeit > 30 Min (Minuten)': '{:.2f}' # Neue Formatierung
     }),
     use_container_width=True
 )
