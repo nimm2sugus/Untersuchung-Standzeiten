@@ -6,7 +6,6 @@ import plotly.express as px
 import urllib.request
 
 # --- Seitenkonfiguration ---
-# Das sollte immer die erste Streamlit-Anweisung im Skript sein.
 st.set_page_config(
     page_title="Analyse der Standzeiten",
     page_icon="⏱️",
@@ -14,7 +13,6 @@ st.set_page_config(
 )
 
 # --- Funktionen ---
-
 @st.cache_data
 def load_excel_file(source, from_url=False):
     """
@@ -23,11 +21,9 @@ def load_excel_file(source, from_url=False):
     """
     try:
         if from_url:
-            # Datei von einer URL laden
             response = urllib.request.urlopen(source)
             df = pd.read_excel(response, engine='openpyxl')
         else:
-            # Datei aus einem Upload laden
             df = pd.read_excel(source, engine='openpyxl')
         return df
     except Exception as e:
@@ -61,7 +57,6 @@ elif input_method == "Öffentlicher SharePoint-Link":
             if df is not None:
                 st.success("Datei erfolgreich von SharePoint geladen.")
 
-# Wenn keine Daten geladen wurden, wird hier gestoppt.
 if df is None:
     st.info("Bitte laden Sie eine Datei hoch oder geben Sie einen Link an, um die Analyse zu starten.")
     st.stop()
@@ -85,16 +80,26 @@ df['Beendet'] = pd.to_datetime(df['Beendet'], errors='coerce')
 df.dropna(subset=['Gestartet', 'Beendet'], inplace=True)
 
 # Berechnung der Standzeit (in Stunden)
-# Die Standzeit ist hier als die gesamte Dauer von 'Gestartet' bis 'Beendet' definiert.
 df['Standzeit_h'] = (df['Beendet'] - df['Gestartet']).dt.total_seconds() / 3600
 
-# --- NEU: Berechnung der Spalte 'Min_Stand' ---
-# Zuerst wird die Standzeit in Minuten berechnet.
-df['Standzeit_min'] = df['Standzeit_h'] * 60
-# 'Min_Stand' erfasst die Minuten, die über die ersten 30 Minuten hinausgehen.
-# Wenn die Dauer <= 30 Min ist, ist das Ergebnis 0.
-df['Min_Stand'] = (df['Standzeit_min'] - 30).clip(lower=0)
-# --- Ende des neuen Blocks ---
+# --- PRÄZISIERTE BERECHNUNG für 'Min_Stand' ---
+
+# 1. Zuerst die gesamte Standzeit jedes Vorgangs in Minuten berechnen.
+df['Standzeit_min_gesamt'] = df['Standzeit_h'] * 60
+
+# 2. Eine neue Spalte 'Min_Stand' erstellen.
+#    Hier wird von der gesamten Standzeit in Minuten die ersten 30 Minuten subtrahiert.
+#    Beispiel:
+#    - Ein Ladevorgang von 50 Minuten Dauer ergibt: 50 - 30 = 20 Minuten.
+#    - Ein Ladevorgang von 25 Minuten Dauer ergibt: 25 - 30 = -5 Minuten.
+minuten_ueber_30 = df['Standzeit_min_gesamt'] - 30
+
+# 3. Alle Ergebnisse, die negativ sind (also Ladevorgänge <= 30 Min.), werden auf 0 gesetzt.
+#    Dies stellt sicher, dass nur die Zeit *über* 30 Minuten erfasst wird.
+df['Min_Stand'] = minuten_ueber_30.clip(lower=0)
+
+# --- Ende der präzisierten Berechnung ---
+
 
 # Negative oder Null-Standzeiten herausfiltern, da sie nicht plausibel sind
 df = df[df['Standzeit_h'] > 0.01] # Ein kleiner Schwellenwert, um sehr kurze, irrelevante Sessions zu ignorieren
@@ -106,7 +111,6 @@ df['Monat'] = df['Beendet'].dt.to_period('M').dt.to_timestamp()
 # Schritt 3: Filter in der Seitenleiste
 st.sidebar.header("🔎 Filteroptionen")
 
-# Zeitraum-Filter
 min_date = df['Beendet'].min().date()
 max_date = df['Beendet'].max().date()
 date_range = st.sidebar.date_input(
@@ -117,7 +121,6 @@ date_range = st.sidebar.date_input(
     help="Wählen Sie den Start- und Endzeitpunkt für die Analyse."
 )
 
-# Standort-Filter
 standorte = sorted(df['Standortname'].dropna().unique())
 selected_standorte = st.sidebar.multiselect(
     "📍 Standort(e) auswählen",
@@ -126,22 +129,18 @@ selected_standorte = st.sidebar.multiselect(
     help="Wählen Sie einen oder mehrere Standorte aus, die in die Analyse einbezogen werden sollen."
 )
 
-# Sicherstellen, dass ein gültiger Zeitraum ausgewählt wurde
 if len(date_range) != 2:
     st.sidebar.error("Bitte einen gültigen Zeitraum mit Start- und Enddatum auswählen.")
     st.stop()
 
-# Anwenden der Filter auf den DataFrame
 start_date, end_date = pd.to_datetime(date_range[0]), pd.to_datetime(date_range[1])
 
 df_filtered = df[
     (df['Beendet'] >= start_date) &
-    # Das Enddatum wird auf das Ende des Tages gesetzt, um auch Ladevorgänge am letzten Tag zu erfassen
     (df['Beendet'] < (end_date + pd.Timedelta(days=1))) &
     (df['Standortname'].isin(selected_standorte))
 ]
 
-# Überprüfen, ob nach der Filterung noch Daten vorhanden sind
 if df_filtered.empty:
     st.warning("Für die gewählte Filterkombination sind keine Daten vorhanden. Bitte passen Sie die Filter an.")
     st.stop()
@@ -150,20 +149,16 @@ if df_filtered.empty:
 # Schritt 4: Aggregation und Visualisierung der Standzeiten
 st.header("Monatliche Auswertung der Standzeiten")
 
-# Datenaggregation: Gruppierung nach Monat und Berechnung der relevanten Kennzahlen
-# --- ERWEITERT: 'Min_Stand' wird nun ebenfalls aggregiert ---
 standzeiten_pro_monat = df_filtered.groupby('Monat').agg(
     Gesamt_Standzeit_h=('Standzeit_h', 'sum'),
     Durchschnittl_Standzeit_h=('Standzeit_h', 'mean'),
     Anzahl_Vorgange=('Standzeit_h', 'count'),
-    Gesamt_Min_Stand=('Min_Stand', 'sum')  # Neue Aggregation
+    Gesamt_Min_Stand=('Min_Stand', 'sum')
 ).reset_index()
 
-# Runden der Ergebnisse für eine saubere Darstellung
 standzeiten_pro_monat['Gesamt_Standzeit_h'] = standzeiten_pro_monat['Gesamt_Standzeit_h'].round(2)
 standzeiten_pro_monat['Durchschnittl_Standzeit_h'] = standzeiten_pro_monat['Durchschnittl_Standzeit_h'].round(2)
-standzeiten_pro_monat['Gesamt_Min_Stand'] = standzeiten_pro_monat['Gesamt_Min_Stand'].round(2) # Runden für neue Spalte
-
+standzeiten_pro_monat['Gesamt_Min_Stand'] = standzeiten_pro_monat['Gesamt_Min_Stand'].round(2)
 
 # Visualisierung 1: Gesamte Standzeit pro Monat (Balkendiagramm)
 st.subheader("Gesamte monatliche Standzeit (in Stunden)")
@@ -176,11 +171,11 @@ fig_standzeit_sum = px.bar(
     text='Gesamt_Standzeit_h'
 )
 fig_standzeit_sum.update_traces(textposition='outside', marker_color='#1f77b4')
-fig_standzeit_sum.update_layout(xaxis_tickformat="%b %Y") # Format z.B. "Aug 2025"
+fig_standzeit_sum.update_layout(xaxis_tickformat="%b %Y")
 st.plotly_chart(fig_standzeit_sum, use_container_width=True)
 
 
-# --- NEU: Visualisierung 2 für 'Min_Stand' ---
+# Visualisierung 2 für 'Min_Stand'
 st.subheader("Gesamte Standzeit über 30 Minuten (in Minuten)")
 fig_min_stand_sum = px.bar(
     standzeiten_pro_monat,
@@ -190,10 +185,9 @@ fig_min_stand_sum = px.bar(
     labels={'Gesamt_Min_Stand': 'Gesamte "Min_Stand" [Minuten]', 'Monat': 'Monat'},
     text='Gesamt_Min_Stand'
 )
-fig_min_stand_sum.update_traces(textposition='outside', marker_color='#2ca02c') # Andere Farbe zur Unterscheidung
+fig_min_stand_sum.update_traces(textposition='outside', marker_color='#2ca02c')
 fig_min_stand_sum.update_layout(xaxis_tickformat="%b %Y")
 st.plotly_chart(fig_min_stand_sum, use_container_width=True)
-# --- Ende des neuen Blocks ---
 
 
 # Visualisierung 3: Durchschnittliche Standzeit pro Monat (Liniendiagramm)
@@ -212,7 +206,6 @@ st.plotly_chart(fig_standzeit_avg, use_container_width=True)
 
 
 # Visualisierung 4: Detaillierte Datentabelle
-# --- ERWEITERT: Tabelle um 'Min_Stand' ergänzt ---
 st.subheader("Datentabelle der monatlichen Standzeit-KPIs")
 st.dataframe(
     standzeiten_pro_monat.rename(columns={
@@ -220,12 +213,12 @@ st.dataframe(
         'Gesamt_Standzeit_h': 'Gesamte Standzeit (Stunden)',
         'Durchschnittl_Standzeit_h': 'Ø Standzeit pro Vorgang (Stunden)',
         'Anzahl_Vorgange': 'Anzahl Ladevorgänge',
-        'Gesamt_Min_Stand': 'Gesamte Standzeit > 30 Min (Minuten)' # Neue Spalte für Tabelle
+        'Gesamt_Min_Stand': 'Gesamte Standzeit > 30 Min (Minuten)'
     }).style.format({
-        'Monat': lambda t: t.strftime('%Y-%m'), # Formatierung für die Tabellenansicht
+        'Monat': lambda t: t.strftime('%Y-%m'),
         'Gesamte Standzeit (Stunden)': '{:.2f}',
         'Ø Standzeit pro Vorgang (Stunden)': '{:.2f}',
-        'Gesamte Standzeit > 30 Min (Minuten)': '{:.2f}' # Neue Formatierung
+        'Gesamte Standzeit > 30 Min (Minuten)': '{:.2f}'
     }),
     use_container_width=True
 )
